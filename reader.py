@@ -26,7 +26,10 @@ class Position:
         return Position(self.column,self.row)
 
 def is_tag(cell_value: str):
+    cell_value = str(cell_value)
     if cell_value is None:
+        return False
+    if len(cell_value) < 3:
         return False
     return (cell_value[0] == '[') and (cell_value[-1] == ']')
 
@@ -87,17 +90,71 @@ def verify_property_list(properties):
     id_exists = False
 
     for name in properties:
-        type = properties[name]
-        if type not in types and name != "LATITUDE" and name != "LONGITUDE":
-            print(name)
-            raise Exception(f"Invalid tag: {type}!")
-        if type == "ID":
-            if id_exists:
-                raise Exception("Multiple ID's are not allowed!")
+        property_data = properties[name]
+        if property_data is None:
+            raise Exception("Invalid Tag!")
+        if property_data['TYPE'] == 'ID':
             id_exists = True
-
     if not id_exists:
         raise Exception("No ID Property!")
+
+
+def get_id_column(properties):
+    id_column = None
+    for name in properties:
+        property = properties[name]
+        if property is None:
+            continue
+
+        type = property["TYPE"]
+        if type == "ID":
+            return property["COLUMN"]
+    raise Exception("No ID column in properties!")
+
+def get_element_count(worksheet, properties):
+    id_column = get_id_column(properties)
+    position = Position(id_column, 4)
+
+    element_count = 0
+    while worksheet[position.to_str()].value is not None:
+        position.increase_row(1)
+        element_count += 1
+    return element_count
+
+def get_elements(worksheet,header, properties, table_position: Position):
+    map_type = header["MAPTYPE"]
+
+    element_count = get_element_count(worksheet,properties)
+    position = table_position.copy()
+    position.increase_row(3)
+
+    elements = {}
+    for _ in range(0, element_count):
+        element = {}
+        id = None
+
+        for name in properties:
+            property = properties[name]
+
+            column = property['COLUMN']
+            type = property['TYPE']
+
+            property_position = Position(column, position.row)
+            cell_value = worksheet[property_position.to_str()].value
+
+            if type == "ID":
+                id = cell_value
+
+            element[name] = cell_value
+
+        if map_type == "MARKER-MAP":
+            if not  id in elements:
+                elements[id] = []
+            elements[id].append(element)
+        else:
+            elements[id] = element
+        position.increase_row(1)
+    return elements
 def get_properties(worksheet, position : Position):
     position = position.copy()
     properties = {}
@@ -111,14 +168,21 @@ def get_properties(worksheet, position : Position):
 
         if is_tag(cell_str):
             type, data = get_tag(cell_str)
+            column = position.column
 
             if type == "END":
                 break
 
             if data is None:
-                properties[type] = None
+                properties[type] = {
+                    "TYPE": type,
+                    "COLUMN": column
+                }
             else:
-                properties[data] = type
+                properties[data] = {
+                    "TYPE": type,
+                    "COLUMN" : column
+                }
             position.increase_column(1)
         else:
             raise Exception("Property is not formatted as a tag!")
@@ -148,7 +212,6 @@ def read_file(file_path):
 
             address = position.to_str()
             cell_content = worksheet[address].value
-
             if is_tag(cell_content):
                 tag,data = get_tag(cell_content)
 
@@ -158,19 +221,31 @@ def read_file(file_path):
 
                     properties = get_properties(worksheet,position)
 
+                    elements = get_elements(worksheet, table_header, properties, position)
+
                     table_name = table_header['NAME']
                     tables[table_name] = {
                         "HEADER": table_header,
                         "DATA": {
                             "PROPERTIES": properties,
-                            "ELEMENTS": [
-                            ]
+                            "ELEMENTS": elements
                         }
                     }
     return tables
-def main():
-    tables = read_file('sample.xlsx')
-    print(tables)
 
-if __name__ == "__main__":
-    main()
+def get_properties_from_table(table):
+    return table['DATA']['PROPERTIES']
+
+def get_value_from_table(table, id_name, property_name):
+    elements = table['DATA']['ELEMENTS']
+    return elements[id_name][property_name]
+
+def get_values_from_table(table, property_name):
+    elements = table['DATA']['ELEMENTS']
+    values = {}
+    for id in elements:
+        values[id] = get_value_from_table(table, id, property_name)
+    return values
+
+def get_source_from_table(table):
+    return table['HEADER']['SRC']
